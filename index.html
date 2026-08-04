@@ -719,19 +719,22 @@ async function construirPDFBlob(){
   document.querySelectorAll('.no-print').forEach(el=>el.style.visibility='visible');
   const imgData = canvas.toDataURL('image/png');
   const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF('p','mm','a4');
-  const pageWidth = 210, pageHeight = 297;
-  const imgWidth = pageWidth;
-  const imgHeight = canvas.height * imgWidth / canvas.width;
-  let heightLeft = imgHeight, position = 0;
-  pdf.addImage(imgData,'PNG',0,position,imgWidth,imgHeight);
-  heightLeft -= pageHeight;
-  while(heightLeft > 0){
-    position = heightLeft - imgHeight;
-    pdf.addPage();
-    pdf.addImage(imgData,'PNG',0,position,imgWidth,imgHeight);
-    heightLeft -= pageHeight;
+  // Tamaño carta (letter), todo el informe en una sola hoja
+  const pdf = new jsPDF('p','mm','letter');
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const margin = 6;
+  const maxWidth = pageWidth - margin*2;
+  const maxHeight = pageHeight - margin*2;
+  let imgWidth = maxWidth;
+  let imgHeight = canvas.height * imgWidth / canvas.width;
+  if(imgHeight > maxHeight){
+    imgHeight = maxHeight;
+    imgWidth = canvas.width * imgHeight / canvas.height;
   }
+  const x = (pageWidth - imgWidth) / 2;
+  const y = (pageHeight - imgHeight) / 2;
+  pdf.addImage(imgData,'PNG',x,y,imgWidth,imgHeight);
   return pdf.output('blob');
 }
 async function descargarPDF(){
