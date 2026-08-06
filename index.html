@@ -50,7 +50,7 @@
   .item-obs input{width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:6px;font-size:12.5px;}
 
   .sig-box{border:1px dashed var(--gray-light);border-radius:6px;background:#fff;position:relative;}
-  .sig-box canvas{width:100%;height:100px;display:block;touch-action:none;border-radius:6px;}
+  .sig-box canvas{width:100%;height:150px;display:block;touch-action:none;border-radius:6px;}
   .sig-clear{position:absolute;top:2px;right:2px;font-size:10px;background:var(--bg);border:1px solid var(--border);
     border-radius:4px;padding:2px 5px;cursor:pointer;color:var(--gray);}
   .sig-final{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
@@ -711,30 +711,81 @@ function nombreArchivo(){
   const pat = (document.getElementById('patente').value || 'vehiculo').replace(/\s+/g,'_');
   return `Inspeccion_Vehiculo_${pat}_${fecha}.pdf`;
 }
+function prepararTextareasParaPDF(root){
+  const textareas = Array.from((root || document).querySelectorAll('textarea'));
+  const reemplazos = textareas.map(ta=>{
+    const cs = getComputedStyle(ta);
+    const div = document.createElement('div');
+    div.textContent = ta.value || ta.placeholder || '';
+    ['width','minHeight','height','padding','border','borderRadius','fontSize','fontFamily',
+     'fontWeight','lineHeight','color','backgroundColor','boxSizing','textAlign'].forEach(p=>{
+      div.style[p] = cs[p];
+    });
+    div.style.whiteSpace = 'pre-wrap';
+    div.style.wordWrap = 'break-word';
+    div.style.overflowWrap = 'break-word';
+    div.style.overflow = 'hidden';
+    div.style.display = 'block';
+    ta.insertAdjacentElement('afterend', div);
+    ta.style.display = 'none';
+    return {ta, div};
+  });
+  return function restaurarTextareas(){
+    reemplazos.forEach(({ta, div})=>{
+      div.remove();
+      ta.style.display = '';
+    });
+  };
+}
 async function construirPDFBlob(){
   initAutoGrowTextareas();
   document.querySelectorAll('.no-print').forEach(el=>el.style.visibility='hidden');
+  const restaurarTextareas = prepararTextareasParaPDF(document.getElementById('informe'));
+  const headerEl = document.querySelector('header');
   const el = document.getElementById('informe');
-  const canvas = await html2canvas(el, {scale:2, useCORS:true, backgroundColor:'#ffffff'});
+  const headerCanvas = headerEl ? await html2canvas(headerEl, {scale:4, useCORS:true, backgroundColor:getComputedStyle(headerEl).backgroundColor}) : null;
+  const canvas = await html2canvas(el, {scale:4, useCORS:true, backgroundColor:'#ffffff'});
+  restaurarTextareas();
   document.querySelectorAll('.no-print').forEach(el=>el.style.visibility='visible');
-  const imgData = canvas.toDataURL('image/png');
   const { jsPDF } = window.jspdf;
-  // Tamaño carta (letter), todo el informe en una sola hoja
+  // Tamaño carta (letter), paginado automático manteniendo la proporción real (sin deformar)
   const pdf = new jsPDF('p','mm','letter');
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
   const margin = 6;
   const maxWidth = pageWidth - margin*2;
   const maxHeight = pageHeight - margin*2;
-  let imgWidth = maxWidth;
-  let imgHeight = canvas.height * imgWidth / canvas.width;
-  if(imgHeight > maxHeight){
-    imgHeight = maxHeight;
-    imgWidth = canvas.width * imgHeight / canvas.height;
+  // Encabezado (logo + título) al inicio de la primera página
+  let headerImgHeight = 0;
+  if (headerCanvas){
+    headerImgHeight = (headerCanvas.height * maxWidth) / headerCanvas.width;
+    pdf.addImage(headerCanvas.toDataURL('image/png'),'PNG',margin,margin,maxWidth,headerImgHeight);
+    headerImgHeight += 4; // espacio antes del contenido
   }
-  const x = (pageWidth - imgWidth) / 2;
-  const y = (pageHeight - imgHeight) / 2;
-  pdf.addImage(imgData,'PNG',x,y,imgWidth,imgHeight);
+  // Ancho fijo al ancho útil de la hoja; el alto se calcula respetando la proporción del contenido
+  const imgWidth = maxWidth;
+  const imgHeight = (canvas.height * imgWidth) / canvas.width;
+  let renderedHeight = 0; // px del canvas ya paginados
+  let page = 0;
+  while (renderedHeight < canvas.height){
+    const availableHeightMM = page === 0 ? (maxHeight - headerImgHeight) : maxHeight;
+    const pxPerThisPage = (availableHeightMM / imgHeight) * canvas.height;
+    const sliceHeight = Math.min(pxPerThisPage, canvas.height - renderedHeight);
+    const pageCanvas = document.createElement('canvas');
+    pageCanvas.width = canvas.width;
+    pageCanvas.height = sliceHeight;
+    const ctx = pageCanvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0,0,pageCanvas.width,pageCanvas.height);
+    ctx.drawImage(canvas, 0, renderedHeight, canvas.width, sliceHeight, 0, 0, canvas.width, sliceHeight);
+    const pageImgData = pageCanvas.toDataURL('image/png');
+    const pageImgHeight = (sliceHeight * imgWidth) / canvas.width;
+    const y = page === 0 ? margin + headerImgHeight : margin;
+    if (page > 0) pdf.addPage();
+    pdf.addImage(pageImgData,'PNG',margin,y,imgWidth,pageImgHeight);
+    renderedHeight += sliceHeight;
+    page++;
+  }
   return pdf.output('blob');
 }
 async function descargarPDF(){
