@@ -737,19 +737,41 @@ function prepararTextareasParaPDF(root){
     });
   };
 }
+// Calcula, en px CSS relativos a `el`, los bordes de tarjetas/filas/celdas
+// para no cortar el contenido justo por la mitad al paginar.
+function calcularPuntosDeCorte(el){
+  const rectEl = el.getBoundingClientRect();
+  const totalHeight = el.scrollHeight;
+  const puntos = new Set([0, totalHeight]);
+  el.querySelectorAll('.card, .row, .field, tr, .sig-box, table').forEach(node=>{
+    const r = node.getBoundingClientRect();
+    const top = r.top - rectEl.top;
+    const bottom = r.bottom - rectEl.top;
+    if (top > 0 && top < totalHeight) puntos.add(top);
+    if (bottom > 0 && bottom < totalHeight) puntos.add(bottom);
+  });
+  return Array.from(puntos).sort((a,b)=>a-b);
+}
 async function construirPDFBlob(){
   initAutoGrowTextareas();
   document.querySelectorAll('.no-print').forEach(el=>el.style.visibility='hidden');
   const restaurarTextareas = prepararTextareasParaPDF(document.getElementById('informe'));
   const headerEl = document.querySelector('header');
   const el = document.getElementById('informe');
-  const headerCanvas = headerEl ? await html2canvas(headerEl, {scale:4, useCORS:true, backgroundColor:getComputedStyle(headerEl).backgroundColor}) : null;
-  const canvas = await html2canvas(el, {scale:4, useCORS:true, backgroundColor:'#ffffff'});
+  const puntosDeCorteCSS = calcularPuntosDeCorte(el); // px CSS, de arriba a abajo
+  // Resolución moderada (calidad de lectura de sobra) para no generar archivos gigantes
+  const ESCALA = 2;
+  const CALIDAD_JPEG = 0.85;
+  const headerCanvas = headerEl ? await html2canvas(headerEl, {scale:ESCALA, useCORS:true, backgroundColor:getComputedStyle(headerEl).backgroundColor}) : null;
+  const canvas = await html2canvas(el, {scale:ESCALA, useCORS:true, backgroundColor:'#ffffff'});
   restaurarTextareas();
   document.querySelectorAll('.no-print').forEach(el=>el.style.visibility='visible');
+  // Puntos de corte convertidos a px del canvas (proporcional, sin depender de la escala exacta usada por html2canvas)
+  const factorCanvas = canvas.height / el.scrollHeight;
+  const puntosDeCorte = puntosDeCorteCSS.map(p=>p*factorCanvas);
   const { jsPDF } = window.jspdf;
   // Tamaño carta (letter), paginado automático manteniendo la proporción real (sin deformar)
-  const pdf = new jsPDF('p','mm','letter');
+  const pdf = new jsPDF({orientation:'p', unit:'mm', format:'letter', compress:true});
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
   const margin = 6;
@@ -759,7 +781,7 @@ async function construirPDFBlob(){
   let headerImgHeight = 0;
   if (headerCanvas){
     headerImgHeight = (headerCanvas.height * maxWidth) / headerCanvas.width;
-    pdf.addImage(headerCanvas.toDataURL('image/png'),'PNG',margin,margin,maxWidth,headerImgHeight);
+    pdf.addImage(headerCanvas.toDataURL('image/jpeg', CALIDAD_JPEG),'JPEG',margin,margin,maxWidth,headerImgHeight);
     headerImgHeight += 4; // espacio antes del contenido
   }
   // Ancho fijo al ancho útil de la hoja; el alto se calcula respetando la proporción del contenido
@@ -770,7 +792,17 @@ async function construirPDFBlob(){
   while (renderedHeight < canvas.height){
     const availableHeightMM = page === 0 ? (maxHeight - headerImgHeight) : maxHeight;
     const pxPerThisPage = (availableHeightMM / imgHeight) * canvas.height;
-    const sliceHeight = Math.min(pxPerThisPage, canvas.height - renderedHeight);
+    const finDeseado = renderedHeight + pxPerThisPage;
+    // Busca el punto de corte "seguro" (borde de tarjeta/fila) más cercano por debajo del límite de la página
+    let corteSeguro = null;
+    for (const p of puntosDeCorte){
+      if (p > renderedHeight + 1 && p <= finDeseado) corteSeguro = p;
+      if (p > finDeseado) break;
+    }
+    const sliceHeight = Math.min(
+      corteSeguro ? (corteSeguro - renderedHeight) : pxPerThisPage,
+      canvas.height - renderedHeight
+    );
     const pageCanvas = document.createElement('canvas');
     pageCanvas.width = canvas.width;
     pageCanvas.height = sliceHeight;
@@ -778,11 +810,11 @@ async function construirPDFBlob(){
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0,0,pageCanvas.width,pageCanvas.height);
     ctx.drawImage(canvas, 0, renderedHeight, canvas.width, sliceHeight, 0, 0, canvas.width, sliceHeight);
-    const pageImgData = pageCanvas.toDataURL('image/png');
+    const pageImgData = pageCanvas.toDataURL('image/jpeg', CALIDAD_JPEG);
     const pageImgHeight = (sliceHeight * imgWidth) / canvas.width;
     const y = page === 0 ? margin + headerImgHeight : margin;
     if (page > 0) pdf.addPage();
-    pdf.addImage(pageImgData,'PNG',margin,y,imgWidth,pageImgHeight);
+    pdf.addImage(pageImgData,'JPEG',margin,y,imgWidth,pageImgHeight);
     renderedHeight += sliceHeight;
     page++;
   }
